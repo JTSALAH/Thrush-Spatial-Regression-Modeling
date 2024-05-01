@@ -1,0 +1,566 @@
+---
+title:  "Spatial Regression Modeling in R"
+output: html_document
+---
+
+```{r,  echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+require(rgdal)
+require(sf)
+require(sp)
+require(raster)           # Raster covariate data
+require(spdep)            # General correlograms
+require(lme4)             # Multi-level models
+require(vegan)            # Multi-scale dependence
+require(mgcv)             # GAM
+require(MASS)             # Spatial GLS
+require(spaMM)            # Spatial GLMM
+require(deldir)           # To create a lattice/theissen polygons
+require(dismo)            # To create a lattice/theissen polygons
+require(spatialreg)       # Eigenvector mapping
+require(ggplot2)
+require(wesanderson)
+```
+
+# 1. Prepare Data Layers
+## Thrush & Elevation Data
+```{r}
+# Read in Thrush Presence/Absence Point Data
+point.data <- read.csv(here::here("Data", "Fletcher_Fortin-2018-Supporting_Files", "data", "vath_2004.csv"), header=TRUE)
+
+# Read in Elevation DEM
+elev = raster(here::here("Data", "Fletcher_Fortin-2018-Supporting_Files", "data", "elev.gri"))
+```
+
+## Calculate Terrain 
+**Terrain** from Raster takes an elevation layer (e.g., DEM) and returns raster layers that are calculated from elevation: including slope, aspect, topographic position index, terrain ruggedness index (TRI), roughness, and flow direction.
+
+**Stack** from Raster will merge multiple raster layers together!
+
+```{r,  echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+# Reproject Elevation
+elev.crs <- CRS("+proj=aea +lat_1=46 +lat_2=48 +lat_0=44 +lon_0=-109.5
+              +x_0=600000 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs")
+proj4string(elev) <- elev.crs
+```
+
+```{r}
+# 1. Create slope, aspect layers from elevation
+elev.terr <- terrain(elev, opt=c("slope", "aspect"))
+  
+# 2. Prepare Layers for Extraction
+layers        <- stack(elev, elev.terr)
+names(layers) <- c("elev", "slope", "aspect")
+
+# 3. Extract GIS data at sampling points
+coords   <- cbind(point.data$EASTING, point.data$NORTHING)
+land.cov <- extract(x=layers, y=coords)
+
+# 4. Append Spatial Data to Thrush Dataset
+point.data <- cbind(point.data,land.cov)
+```
+
+## Inspect Data Layers
+
+```{r}
+# 1. Subset Raster Brick to access Slope
+slope_spdf = rasterToPoints(layers$slope)
+
+# 2. Convert rasterToPoints to data.frame for GGPLOT
+slope_df = data.frame(slope_spdf)
+
+# 3. Convert Points to SF
+point_sf = st_as_sf(point.data, coords = c("EASTING", "NORTHING"))
+
+# 4. GGPLOT
+ggplot() +
+  geom_raster(data = slope_df, mapping = aes(x = x, y = y, fill = slope)) +
+  geom_sf(data = point_sf)  +
+  labs(title = "Thrush Presence/Absence and Slope", 
+       fill = "Slope",
+       color = "Thrush\nPresence/Absence",
+       x = "EASTING", 
+       y = "NORTHING") +
+  scale_fill_gradientn(colours = wes_palette("IsleofDogs2", type = "continuous"))
+```
+
+# 2. Accounting for Autocorrelation in Models that Ignore Spatial Dependence {.tabset .tabset-pills}
+## Logistic Regression Ignoring Spatial Dependence {.tabset .tabset-pills}
+### Creating the Regression
+
+```{r}
+# Check Correlations among Predictor Variables
+cor(point.data[,c("elev","slope","aspect")], method="pearson")
+pairs(point.data[,c("elev","slope","aspect")])
+``` 
+
+**Scale** from Raster allows you to scale and center rasters for modeling!
+
+```{r}
+# Center and Scale Predictor Variables for Modeling
+point.data$elevs   <- scale(point.data$elev,   center = T, scale = T)
+point.data$slopes  <- scale(point.data$slope,  center = T, scale = T)
+point.data$aspects <- scale(point.data$aspect, center = T, scale = T)
+```
+
+To specify a quadratic term in R, we write **I(elev^2)**. 
+
+*This could also be accomplished through the poly()
+ 
+```{r}
+# 1. Logistic Regression on Elevation
+VATH.elev  <- glm(VATH ~ elev, family="binomial", data=point.data)
+
+# 2. Logistic Regression with All Additive Factors
+VATH.all   <- glm(VATH ~ elevs + slopes + aspects, family="binomial", data=point.data)
+
+# 3. Logistic Regression with Elevation as a Quadratic (nonlinear) Effect
+VATH.elev2 <- glm(VATH ~ elev + I(elev^2),family="binomial", data=point.data)
+```
+
+### Regression Model Comparison with AIC
+
+```{r}
+summary(VATH.elev)
+summary(VATH.all)
+summary(VATH.elev2)
+```
+
+```{r}
+# Contrast Models with AIC
+AIC(VATH.elev,VATH.all,VATH.elev2)
+  
+# Extract Coefficients and their SEs from the Best Model
+glm.summary <- c(summary(VATH.elev2)$coef[2,1],
+                 summary(VATH.elev2)$coef[2,2],
+                 summary(VATH.elev2)$coef[3,1],
+                 summary(VATH.elev2)$coef[3,2])
+
+# Inspect
+summary(VATH.elev2)$coef
+glm.summary
+```
+
+VATH.elev2 has the lowest AIC, meaning that it is the best model fit!
+
+## Plot Predicted Variable Relationships
+
+**predict()** from Raster makes a Raster object with predictions from a fitted model object (for example, obtained with lm, glm).
+
+**plogist** does a random generation for the logistic distribution given a model
+
+```{r}
+# Create a Template Dataset
+Elev <- seq(min(point.data$elev), max(point.data$elev), length=15)
+newdata <- data.frame(elev=Elev)
+
+# Predict onto Template
+glm.pred <- predict(VATH.elev2, newdata=newdata, type= "link", se=T)
+ucl <- glm.pred$fit + 1.96*glm.pred$se.fit 
+lcl <- glm.pred$fit - 1.96*glm.pred$se.fit
+
+# Back-Transform from Link to Probability Scale
+glm.newdata <- data.frame(newdata, 
+                          pred=plogis(glm.pred$fit), 
+                          lcl=plogis(lcl), # upper confidence level
+                          ucl=plogis(ucl)) # lower confidence level
+```
+
+We multiply by 1.96 because 1.96 is the approximate value of the 97.5 percentile point of the standard normal distribution. 95% of the area under a normal curve lies within roughly 1.96 standard deviations of the mean, and due to the central limit theorem, this number is therefore used in the construction of approximate 95% confidence intervals. 
+
+```{r}
+# 1. Plot Elevation vs. Probability of Thrush Occurrence 
+par(mfrow = c(1,2), oma=c(0,0,0,4))
+plot(glm.newdata$elev, glm.newdata$pred, ylim=c(0,0.5), xlab="Elevation", ylab="Prob. Occurrence")
+lines(glm.newdata$elev, glm.newdata$lcl)
+lines(glm.newdata$elev, glm.newdata$ucl)
+
+# 2. Map the model
+glm.raster <- predict(model=VATH.elev2, object=layers,  type="response")
+plot(glm.raster, xlab = "Longitude", ylab = "Latitude")
+```
+
+## Inspect spatial dependence of response variable
+
+```{r}
+# 1. Create Indicator Correlogram Custom Function
+icorrelogram <- function(locations,z, binsize, maxdist){
+  distbin <- seq(0,maxdist,by=binsize)
+  Nbin <- length(distbin)-1
+  moran.results <- data.frame("dist"= rep(NA,Nbin), "Morans.i"=NA,"null.lcl"=NA, "null.ucl"=NA)
+  
+  for (i in 1:Nbin){
+    d.start<-distbin[i] 
+    d.end<-distbin[i+1]
+    neigh <- dnearneigh(x=locations, d1=d.start, d.end, longlat=F) # Identifies neighbors between points for different distance classes
+    wts <- nb2listw(neighbours=neigh, style='B', zero.policy=T)    # Creates weights based off of neighbors
+    mor.i <- moran.mc(x=z, listw=wts, nsim=200, alternative="greater", zero.policy=T)  
+    # Note alternative is for P-value, so only 'significant if positive autocorrelation
+    
+    moran.results[i, "dist"]<-(d.end+d.start)/2 
+    moran.results[i, "Morans.i"]<-mor.i$statistic 								             # Observed Moran's I
+    moran.results[i, "null.lcl"]<-quantile(mor.i$res, probs = 0.025,na.rm = T) # 95% null envelope	
+    moran.results[i, "null.ucl"]<-quantile(mor.i$res, probs = 0.975,na.rm = T) # 95% null envelope
+  }
+  return(moran.results)
+}
+```
+
+```{r}
+# 2. Run Indicator Correlogram Custom Function
+VATH.cor <- icorrelogram(locations=coords,     # contains EASTING and NORTHING (X/Y) of the point data
+                         z=point.data$VATH,    # response variable?
+                         binsize=1000, maxdist=15000)
+
+# 3. Inspect Indicator Correlogram
+round(head(VATH.cor,3),2)
+
+# 4. Plot Indicator Correlogram
+plot(VATH.cor$dist, VATH.cor$Morans.i, ylim = c(-0.5, 0.5), main = "VATH Correlogram")
+abline(h=0, lty = "dashed")
+lines(VATH.cor$dist, VATH.cor$null.lcl, col = 2)
+lines(VATH.cor$dist, VATH.cor$null.ucl, col = 2)
+```
+
+## Inspect Spatial Dependence of GLM Residuals
+
+```{r}
+# 1. Extract Residuals from Quadratic Elevation Model
+VATH.elev2.res <- residuals(VATH.elev2, type="deviance")
+
+# 2. Create Indicator Correlogram on Residuals of the Quadratic Elevation Model
+corr.res <- icorrelogram(locations=coords, z=VATH.elev2.res, binsize=1000, maxdist=15000)
+
+# 3. Plot Residual Indicator Correlogram
+plot(corr.res$dist, corr.res$Morans.i, ylim = c(-0.5, 0.5), main = "VATH Residual Correlogram")
+abline(h=0, lty = "dashed")
+lines(corr.res$dist, corr.res$null.lcl)
+lines(corr.res$dist, corr.res$null.ucl)
+
+# 4, Contrast Results from Raw to Residuals with Mean
+VATH.int <- glm(VATH ~ 1,family="binomial", data=point.data)
+VATH.int.res <- residuals(VATH.int, type="deviance")
+```
+
+Note that rather than using correlograms, we could have used semivariograms on the residuals to interpret spatial autocorrelation in the residuals.
+
+If we fit an intercept-only (mean) model and contrast correlograms from the raw data and the residuals of the mean model, we find that the Moran’s I is identical (r = 1). This illustrates the equivalence of considering residuals from regression models in correlograms when no predictors are considered to that of the raw data.
+
+```{r}
+# 5. Create correlogram on residuals of mean model (intercept model)
+corr.int.res <- icorrelogram(locations=coords, z=VATH.int.res, binsize=1000, maxdist=15000)
+
+# 6. Determine Correlation
+cor(VATH.cor$Morans.i, corr.int.res$Morans.i)
+```
+
+## Subset Data to Account for Autocorrelation
+
+Because of the spatial dependence in the residuals, we consider either subsetting the data based on the approximate range of spatial autocorrelation or regression-like models that attempt to account for spatial autocorrelation.
+
+```{r}
+# 1. Randomly Shuffle Data by Transect & Create a Shuffled Rank Vector
+# Note: This essentially picks one random point from each transect
+rand.vector <- with(
+  point.data,
+  ave(
+    POINT,
+    as.factor(TRANSECT),
+    FUN=function(x) {sample(length(x))}))
+
+# 2. Pick One Random Point on Transect and Remove the Rest
+point.datasub <- point.data[rand.vector<=1,]
+
+# 3. Subset Coordinates
+coords.sub <- cbind(point.datasub$NORTHING, point.datasub$NORTHING)
+```
+
+```{r}
+# 4. Refit the Logistic Regression Model with New Subset
+VATH.sub <- glm(VATH~elev+I(elev^2), family="binomial", data=point.datasub)
+
+# 5. Extract Model Coefficients
+glmsub.summary<-c(summary(VATH.sub)$coef[2,1],
+                  summary(VATH.sub)$coef[2,2],
+                  summary(VATH.sub)$coef[3,1],
+                  summary(VATH.sub)$coef[3,2])
+glmsub.summary
+```
+
+We lost a lot of samples, so SE went up and statistical support for elevation effects was lost!
+
+Depending on the type of model you have, the type of residuals you want to calculate may vary! The deviance residuals are potentially more useful in GLMs in comparison to others because they are directly related to the overall deviance (and likelihood) of the model, where the sum of the deviance residuals equals the deviance of the model (-2log-likelihood).
+
+```{r}
+# 1. Extract Model Residuals
+VATH.sub.res <- residuals(VATH.sub, type="deviance")
+
+# 2. Create Indicator Correlogram on Residuals of the New Subset Model
+# Note that for this subset we need to use a larger lag distance than 1-km because we no longer have data points <1 km 
+# Alternatively, one could just increase the first few bin sizes
+corr.sub.res <- icorrelogram(locations=coords.sub, z=VATH.sub.res, binsize=2000, maxdist=15000)
+
+# 3. Plot Residual Indicator Correlogram
+plot(corr.sub.res$dist, corr.sub.res$Morans.i, ylim = c(-0.5, 0.5), main = "Subsitute Residual Correlogram")
+abline(h=0, lty = "dashed")
+lines(corr.sub.res$dist, corr.sub.res$null.lcl)
+lines(corr.sub.res$dist, corr.sub.res$null.ucl)
+```
+
+# 3. Trend Surface Models {.tabset .tabset-pills}
+
+Trend surface analysis is the most widely used global surface-fitting procedure. The mapped data are approximated by a polynomial expansion of the geographic coordinates of the control points, and the coefficients of the polynomial function are found by the method of least squares. Each original observation is considered to be the sum of a deterministic polynomial function of the geographic coordinates plus a random error. 
+
+## Polynomial Trend Surface Model
+
+To do a Polynomial Trend Surface Model, you want to add the linear, quadratic, and cubic terms--which you can do manually or with poly(). poly(EASTING,3) and poly(NORTHING,3) would add the linear, quadratic and cubic terms instead of adding them all yourself. Note that the poly function also standardizes polynomials to be orthogonal, removing the correlation between terms (which in many situations would be preferred).
+
+```{r}
+# 1. Create a Polynomial Trend Surface Model
+VATH.trend <- glm(VATH~elev+I(elev^2)+EASTING+NORTHING+I(EASTING^2)+
+                    I(EASTING^3)+I(NORTHING^2)+I(NORTHING^3), family="binomial", data=point.data)
+# Note: This is equivalent to
+VATH.trend <- glm(VATH~elev+I(elev^2)+poly(EASTING,3)+poly(NORTHING,3), family="binomial", data=point.data)
+
+# 2. Extract Model Coefficients
+trend.summary <- c(summary(VATH.trend)$coef[2,1],
+                   summary(VATH.trend)$coef[2,2],
+                   summary(VATH.trend)$coef[3,1],
+                   summary(VATH.trend)$coef[3,2])
+
+# 3. Extract Model Residuals
+VATH.trend.res <- residuals(VATH.trend, type="deviance")
+
+# 4. Create Indicator Correlogram on Residuals of the Polynomial Trend Surface Model
+cor.trend.res <- icorrelogram(locations=coords, z=VATH.trend.res, binsize=1000, maxdist=15000)
+
+# 5. Plot Residual Indicator Correlogram
+plot(cor.trend.res$dist, cor.trend.res$Morans.i, ylim = c(-0.5, 0.5), main = "Polynomial Trend Surface Residual Correlogram")
+abline(h=0, lty = "dashed")
+lines(cor.trend.res$dist, cor.trend.res$null.lcl)
+lines(cor.trend.res$dist, cor.trend.res$null.ucl)
+```
+
+## GAM Trend Surface Model
+
+The Polynomial Trend Surface Model is limited in the spatial variation in can capture. An alternative to this model is to consider a generalized additive model (GAM), where **we allow spline functions to capture spatial variation**. The **mgcv** package provides a means to automate the selection of spline variation through the use of generalized cross-validation procedures
+
+Splines are considered for both Easting (x) and Northing ( y) coordinates with the **s() command**!
+
+*This syntax defaults to automated selection of the number of knots being considered
+
+```{r}
+# 1. Generate GAM Trend Surface Model
+VATH.gam <- gam(VATH~elev+I(elev^2)+s(EASTING,NORTHING), family="binomial", data=point.data)
+
+# 2. Inspect the Model
+summary(VATH.gam)
+
+# 3. Extract Model Coefficients
+gam.summary <- c(summary(VATH.gam)$p.coeff[2],
+                 summary(VATH.gam)$se[2],
+                 summary(VATH.gam)$p.coeff[3],
+                 summary(VATH.gam)$se[3])
+
+# 4. Extract Model Residuals
+VATH.gam.res <- residuals(VATH.gam, type="deviance")
+
+# 5. Create Indicator Correlogram on Residuals of the GAM Trend Surface Model
+cor.gam.res <- icorrelogram(locations=coords, z=VATH.gam.res, binsize=1000, maxdist=15000)
+
+# 6. Plot Residual Indicator Correlogram
+plot(cor.gam.res$dist, cor.gam.res$Morans.i, ylim = c(-0.5, 0.5), main = "GAM Residual Correlogram")
+abline(h=0, lty = "dashed")
+lines(cor.gam.res$dist, cor.gam.res$null.lcl)
+lines(cor.gam.res$dist, cor.gam.res$null.ucl)
+```
+
+
+# 4. Eigenvector Mapping {.tabset .tabset-pills}
+
+Moran Eigenvector (ME) is intended to remove spatial autocorrelation from the residuals of generalised linear models.
+
+### Eigenvector Creation
+
+We want to calculate a neighborhood weights matrix by using the **maximum distance needed for a minimum spanning tree—the minimum set of connections needed to fully connect points across the landscape**. The distance needed for a minimum spanning tree can be determined with the **vegan package** using the **spantree function**. Note that this distance could also be determined using the **pcnm function** and finding the threshold
+
+```{r}
+# 1. Determine Threshold Distance Based on Minimum Spanning Tree
+spantree.em <- spantree(dist(coords), toolong = 0)
+max(spantree.em$dist)
+
+# 2. Create a Neighbhorhood Matrix
+dnn<- dnearneigh(coords, 0, max(spantree.em$dist))                   # List of links to neighboring points within distance range
+dnn_dists <- nbdists(dnn, coords)                                    # List of distances (based on links in dnn)
+dnn_sims <- lapply(dnn_dists, function(x) (1-((x/4)^2)))             # Scale distances as recommended by Dormann et al. (2007) 
+ME.weight <- nb2listw(dnn, glist=dnn_sims, style="B", zero.policy=T) # Create spatial weights matrix (in list form)
+
+# 3. Determine Eigenvector Model Selection
+VATH.ME <- spatialreg::ME(VATH~elev+I(elev^2), listw=ME.weight, family="binomial", data=point.data)
+```
+
+### Selected Eigenvector Summaries
+
+```{r}
+# 1. Inspect Eigenvector Model
+summary(VATH.ME)
+```
+
+```{r}
+# 2. View Selected Eigenvectors
+head(VATH.ME$selection)
+head(fitted(VATH.ME),2)
+head(VATH.ME$vectors)
+```
+
+### Eigenvector Modeling
+
+```{r}
+# 1. Create New GLM with Eigenvector Adjusted Covariates
+VATH.evm <- glm(VATH~elev+I(elev^2)+fitted(VATH.ME), family="binomial", data=point.data)
+
+# 2. Inspect Eigenvector GLM Model
+summary(VATH.evm)
+
+# 3. Extract coefficients
+evm.summary <- c(summary(VATH.evm)$coef[2,1],
+                 summary(VATH.evm)$coef[2,2],
+                 summary(VATH.evm)$coef[3,1],
+                 summary(VATH.evm)$coef[3,2])
+evm.summary
+
+# 4. Extract Model Residuals
+VATH.evm.res <- residuals(VATH.evm, type="deviance")
+
+# 5. Create Indicator Correlogram on Residuals of the Eigenvector GLM Model
+cor.evm.res <- icorrelogram(locations=coords, z=VATH.evm.res, binsize=1000, maxdist=15000)
+
+# 6. Plot Residual Indicator Correlogram
+plot(cor.evm.res$dist, cor.evm.res$Morans.i, ylim = c(-0.5, 0.5), main = "Eigenvector Residual Correlogram")
+abline(h=0, lty = "dashed")
+lines(cor.evm.res$dist, cor.evm.res$null.lcl)
+lines(cor.evm.res$dist, cor.evm.res$null.ucl)
+
+# 7. Plot Eigenvectors & Predicted Map
+plot(glm.raster, xlab = "Longitude", ylab = "Latitude")
+points(point.data[,c("EASTING","NORTHING")], pch=21, col="black", cex=2,lwd = 0.5,
+       bg=topo.colors(6)[cut(fitted(VATH.ME)[,1],breaks = 6)])
+```
+
+# 5. Autocovariate Logistic Regression {.tabset .tabset-pills}
+
+To fit autocovariate models, we calculate new autocovariates and then use these covariates in a standard logistic regression model
+The type provides the weighting scheme. 
+
+- When inverse is specified, points are weighted by the inverse of the distance between the focal point and the neighboring point. 
+
+- When “one” is specified, all points within the distance (nbs) are given equal weight. 
+
+The style describes how the covariate will be calculated
+
+- "B" reflects a binary coding, which provides a valid weighting scheme for autocovariate models!
+
+```{r}
+# 1. Create Alternative Autocovariates with 1km radius
+auto1km_inv <- autocov_dist(point.data$VATH, coords, nbs = 1000, type= "inverse",       # Inverse of distance weights
+                            zero.policy=T)    
+auto1km     <- autocov_dist(point.data$VATH, coords, nbs = 1000, type= "one",style="B", # Binary weights
+                            zero.policy=T)  
+
+# 2. Contrast Autocovariates with 1km radius
+cor(auto1km, auto1km_inv)
+
+# 3. Plot Autocovariates
+par(mfrow = c(1,2))
+plot(auto1km, auto1km_inv)
+plot(jitter(auto1km, factor=0.4), auto1km_inv) # x-axis jittered to better see points
+```
+
+```{r}
+# 4. Create an Autocovariate Model
+VATH.auto1km <- glm(VATH~elev+I(elev^2)+auto1km, family="binomial", data=point.data)
+
+# 5. Inspect Autocovariate Model
+summary(VATH.auto1km)
+
+# 6. Extract Model Coefficients
+auto.summary <- c(summary(VATH.auto1km)$coef[2,1],
+                  summary(VATH.auto1km)$coef[2,2],
+                  summary(VATH.auto1km)$coef[3,1],
+                  summary(VATH.auto1km)$coef[3,2])
+
+# 7. Extract Model Residuals
+VATH.auto.res <- residuals(VATH.auto1km, type="deviance")
+
+# 8. Create Indicator Correlogram on Residuals of the Autocovariate Model
+cor.auto.res <- icorrelogram(locations=coords, z=VATH.auto.res, binsize=1000, maxdist=15000)
+
+# 9. Plot Residual Indicator Correlogram
+plot(cor.auto.res$dist, cor.auto.res$Morans.i, ylim = c(-0.5, 0.5), main = "Autocovariate Logistic Regressive Model Residual Correlogram")
+abline(h=0, lty = "dashed")
+lines(cor.auto.res$dist, cor.auto.res$null.lcl)
+lines(cor.auto.res$dist, cor.auto.res$null.ucl)
+```
+
+# 6. Multi-level Model {.tabset .tabset-pills}
+
+A simple multilevel model can also be fit to these data by considering transects as a random effect in the regression model. In doing so, we effectively “block” with transects, treating points within transects has having potential spatial dependence. Because this structure is not spatially explicit, we effectively assume that dependence is constant within transects (e.g., neighboring points have the same dependence as points located along the ends of the transects). 
+
+```{r}
+# 1. Ensure Random Effects are Factors
+point.data$TRANSECT <- as.factor(point.data$TRANSECT)
+
+# 2. Create a GLMM
+VATH.glmm <- glmer(VATH~elev+I(elev^2)+(1|TRANSECT), family="binomial", data=point.data)
+
+# 3. Inspect the GLMM
+summary(VATH.glmm)
+
+# 4. Extract Model Coefficients
+glmm.summary <- c(summary(VATH.glmm)$coef[2,1],
+                  summary(VATH.glmm)$coef[2,2],
+                  summary(VATH.glmm)$coef[3,1],
+                  summary(VATH.glmm)$coef[3,2])
+glmm.summary
+
+# 5. Extract Model Residuals
+VATH.glmm.res <- resid(VATH.glmm)
+
+# 6. Create Indicator Correlogram on Residuals of the GLMM
+cor.glmm.res <- icorrelogram(locations=coords, z=VATH.glmm.res, binsize=1000, maxdist=15000)
+
+# 7. Plot Residual Indicator Correlogram
+plot(cor.glmm.res$dist, cor.glmm.res$Morans.i, ylim = c(-0.5, 0.5), main = "Multilevel Model Residual Correlogram")
+abline(h=0, lty = "dashed")
+lines(cor.glmm.res$dist, cor.glmm.res$null.lcl)
+lines(cor.glmm.res$dist, cor.glmm.res$null.ucl)
+```
+
+# 7. Model Selection & RMSE
+
+```{r}
+rmse = function(fit) return (sqrt(mean(residuals(fit)^2)))
+fits_rmse = data.frame(
+  model = c("Logistic Regression Ignoring Spatial Dependence", 
+            "Substituted Logistic Regression Ignoring Spatial Dependence", 
+            "Polynomial Trend Surface Model",
+            "GAM Trend Surface Model",
+            "Eigenvector Model",
+            "Autocovariate Logistic Regression",
+            "Multi-level Model"),
+  rmse = c(
+    rmse(VATH.elev2),
+    rmse(VATH.sub),
+    rmse(VATH.trend),
+    rmse(VATH.gam),
+    rmse(VATH.evm),
+    rmse(VATH.auto1km),
+    rmse(VATH.glmm)
+  ))
+fits_rmse
+```
+
+The lower the RMSE, the better a given model is able to fit a dataset--meaning that the Multi-level and GAM Trend Surface Model are the best models to choose from. The GAM Trend Surface Model did not successfully remove spatial dependence in the residuals while the Multi-level model did. The Multi-level model is the obvious choice, sporting both a low RMSE value and a removal of spatial dependence in the residuals.
+
+Autocovariate and multilevel models did remove spatial dependence in the residuals by appropriately capturing the spatial scale of dependence in the data.
+  
+  
