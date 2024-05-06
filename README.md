@@ -30,6 +30,8 @@ land.cov <- extract(x=layers, y=coords)
 point.data <- cbind(point.data,land.cov)
 ```
 
+![THRUSHOCC](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/THRUSHOCC.png)
+
 # 3. Trend Surface Models
 ## Polynomial Trend Surface Model
 To do a Polynomial Trend Surface Model, you want to add the linear, quadratic, and cubic terms--which you can do manually or with poly(). poly(EASTING,3) and poly(NORTHING,3) would add the linear, quadratic and cubic terms instead of adding them all yourself. 
@@ -72,7 +74,11 @@ VATH.gam <- gam(VATH~elev+I(elev^2)+s(EASTING,NORTHING), family="binomial", data
 
 # 2. Inspect the Model
 summary(VATH.gam)
+```
 
+![GAMSUM](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/GAMSUM.png)
+
+```r
 # 3. Extract Model Coefficients
 gam.summary <- c(summary(VATH.gam)$p.coeff[2],
                  summary(VATH.gam)$se[2],
@@ -117,18 +123,7 @@ VATH.ME <- spatialreg::ME(VATH~elev+I(elev^2), listw=ME.weight, family="binomial
 
 ## Selected Eigenvector Summaries
 
-```r
-# 1. Inspect Eigenvector Model
-summary(VATH.ME)
-```
-
-
-```{r}
-# 2. View Selected Eigenvectors
-head(VATH.ME$selection)
-head(fitted(VATH.ME),2)
-head(VATH.ME$vectors)
-```
+![SELEIGSUM](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/SELEIGSUM.png)
 
 ## Eigenvector Modeling
 
