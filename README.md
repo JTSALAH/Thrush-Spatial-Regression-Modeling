@@ -59,7 +59,7 @@ abline(h=0, lty = "dashed")
 lines(cor.trend.res$dist, cor.trend.res$null.lcl)
 lines(cor.trend.res$dist, cor.trend.res$null.ucl)
 ```
-![RIC]()
+![PTSRC](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/PTSRC.png)
 
 ## GAM Trend Surface Model
 The Polynomial Trend Surface Model is limited in the spatial variation in can capture. An alternative to this model is to consider a generalized additive model (GAM), where **we allow spline functions to capture spatial variation**. The **mgcv** package provides a means to automate the selection of spline variation through the use of generalized cross-validation procedures
@@ -91,7 +91,7 @@ abline(h=0, lty = "dashed")
 lines(cor.gam.res$dist, cor.gam.res$null.lcl)
 lines(cor.gam.res$dist, cor.gam.res$null.ucl)
 ```
-![RIC2]()
+![GAMRC](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/GAMRC.png)
 
 # 4. Eigenvector Mapping
 Moran Eigenvector (ME) is intended to remove spatial autocorrelation from the residuals of generalised linear models. We can use this to remove autocorelated points in our Thrush data!
@@ -122,6 +122,7 @@ VATH.ME <- spatialreg::ME(VATH~elev+I(elev^2), listw=ME.weight, family="binomial
 summary(VATH.ME)
 ```
 
+
 ```{r}
 # 2. View Selected Eigenvectors
 head(VATH.ME$selection)
@@ -137,13 +138,16 @@ VATH.evm <- glm(VATH~elev+I(elev^2)+fitted(VATH.ME), family="binomial", data=poi
 
 # 2. Inspect Eigenvector GLM Model
 summary(VATH.evm)
+```
 
+![EIGENMODELSUM](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/EIGENMODELSUM.png)
+
+```r
 # 3. Extract coefficients
 evm.summary <- c(summary(VATH.evm)$coef[2,1],
                  summary(VATH.evm)$coef[2,2],
                  summary(VATH.evm)$coef[3,1],
                  summary(VATH.evm)$coef[3,2])
-evm.summary
 
 # 4. Extract Model Residuals
 VATH.evm.res <- residuals(VATH.evm, type="deviance")
@@ -156,7 +160,10 @@ plot(cor.evm.res$dist, cor.evm.res$Morans.i, ylim = c(-0.5, 0.5), main = "Eigenv
 abline(h=0, lty = "dashed")
 lines(cor.evm.res$dist, cor.evm.res$null.lcl)
 lines(cor.evm.res$dist, cor.evm.res$null.ucl)
+```
+![EIGENRC](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/EIGENRC.png)
 
+```r
 # 7. Plot Eigenvectors & Predicted Map
 plot(glm.raster, xlab = "Longitude", ylab = "Latitude")
 points(point.data[,c("EASTING","NORTHING")], pch=21, col="black", cex=2,lwd = 0.5,
@@ -165,7 +172,8 @@ points(point.data[,c("EASTING","NORTHING")], pch=21, col="black", cex=2,lwd = 0.
 
 # 5. Autocovariate Logistic Regression
 
-To fit autocovariate models, we calculate new autocovariates and then use these covariates in a standard logistic regression model
+To fit autocovariate models, we calculate new autocovariates and then use these covariates in a standard logistic regression model.
+
 The type provides the weighting scheme. 
 
 - When inverse is specified, points are weighted by the inverse of the distance between the focal point and the neighboring point. 
@@ -191,6 +199,7 @@ par(mfrow = c(1,2))
 plot(auto1km, auto1km_inv)
 plot(jitter(auto1km, factor=0.4), auto1km_inv) # x-axis jittered to better see points
 ```
+![AUTCOVPLOT](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/AUTCOVPLOT.png)
 
 ```r
 # 4. Create an Autocovariate Model
@@ -217,6 +226,7 @@ abline(h=0, lty = "dashed")
 lines(cor.auto.res$dist, cor.auto.res$null.lcl)
 lines(cor.auto.res$dist, cor.auto.res$null.ucl)
 ```
+![ACLRMRC](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/ACLRMRC.png)
 
 # 6. Multi-level Model 
 
@@ -231,14 +241,19 @@ VATH.glmm <- glmer(VATH~elev+I(elev^2)+(1|TRANSECT), family="binomial", data=poi
 
 # 3. Inspect the GLMM
 summary(VATH.glmm)
+```
 
+![VATHGLMMSUM](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/VATHGLMMSUM.png)
+
+```
 # 4. Extract Model Coefficients
 glmm.summary <- c(summary(VATH.glmm)$coef[2,1],
                   summary(VATH.glmm)$coef[2,2],
                   summary(VATH.glmm)$coef[3,1],
                   summary(VATH.glmm)$coef[3,2])
-glmm.summary
+```
 
+```r
 # 5. Extract Model Residuals
 VATH.glmm.res <- resid(VATH.glmm)
 
@@ -251,6 +266,7 @@ abline(h=0, lty = "dashed")
 lines(cor.glmm.res$dist, cor.glmm.res$null.lcl)
 lines(cor.glmm.res$dist, cor.glmm.res$null.ucl)
 ```
+![MLMRC](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/MLMRC.png)
 
 # 7. Model Selection & RMSE
 
@@ -275,6 +291,7 @@ fits_rmse = data.frame(
   ))
 fits_rmse
 ```
+![RMSE](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/RMSE.png)
 
 The lower the RMSE, the better a given model is able to fit a dataset--meaning that the Multi-level and GAM Trend Surface Model are the best models to choose from. The GAM Trend Surface Model did not successfully remove spatial dependence in the residuals while the Multi-level model did. The Multi-level model is the obvious choice, sporting both a low RMSE value and a removal of spatial dependence in the residuals.
 
