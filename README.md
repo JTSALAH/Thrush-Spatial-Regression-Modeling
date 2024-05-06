@@ -121,10 +121,6 @@ ME.weight <- nb2listw(dnn, glist=dnn_sims, style="B", zero.policy=T) # Create sp
 VATH.ME <- spatialreg::ME(VATH~elev+I(elev^2), listw=ME.weight, family="binomial", data=point.data)
 ```
 
-## Selected Eigenvector Summaries
-
-![SELEIGSUM](https://raw.githubusercontent.com/JTSALAH/Thrush-Spatial-Regression-Modeling/main/Images/SELEIGSUM.png)
-
 ## Eigenvector Modeling
 
 ```r
